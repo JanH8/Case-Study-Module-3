@@ -108,6 +108,7 @@ cluster_centers = tibble("cluster"=clusters,"lat"=empty, "lng"=empty )
 c = "1"
 
 averages = stations %>%
+  select_at(c("lat","lng","ccompl")) %>%
   group_by(ccompl) %>%
   summarise_all(mean)
 averages
@@ -153,10 +154,12 @@ trips_relevant_move$drop_off = as.factor(drop_off)
 trips_relevant_move$start = as.numeric(start)
 
 train_indices = sample(1:nrow(trips_relevant_move), nrow(trips_relevant_move) * 0.7)  # 70% for training
-train_X = trips_relevant_move[train_indices, c("day_of_week_num","day_of_month", "month","start")]
-train_Y = trips_relevant_move[train_indices,c("drop_off")]
-test_X = trips_relevant_move[-train_indices, c("day_of_week_num","day_of_month", "month","start")]
-test_Y = trips_relevant_move[-train_indices, c("drop_off")]
+train = as.data.frame(trips_relevant_move[train_indices,])
+train_X = train[, c("day_of_week_num","day_of_month", "month","start")]
+train_Y = train[,c("drop_off")]
+test = as.data.frame(trips_relevant_move[-train_indices,])
+test_X = test[, c("day_of_week_num","day_of_month", "month","start")]
+test_Y = test[, c("drop_off")]
 
 # Approach 1: Random forest
 # Load the randomForest package
@@ -180,10 +183,56 @@ accuracy = sum(diag(confusion_matrix)) / sum(confusion_matrix)
 print(confusion_matrix)
 print(paste("Accuracy:", accuracy))
 
+# Approach 2: svm
+require(mlr)
+task.svm = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
+lrn.svm = makeLearner("classif.ksvm")
+lrn.svm
+mod.svm = train(learner = lrn.svm, task = task.svm)
 
+predictions.svm = predict(object=mod.svm, newdata=test)
+confusion_matrix.svm = table(Actual = pull(predictions.svm$data['truth']), Predicted = pull(predictions.svm$data['response']))
+accuracy.svm = sum(diag(confusion_matrix.svm)) / sum(confusion_matrix.svm)
+print(confusion_matrix.svm)
+print(paste("Accuracy:", accuracy.svm))
 
+# Approach 3: decision tree
+require(mlr)
+task.rpart = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
+lrn.rpart = makeLearner("classif.rpart")
+lrn.rpart
+mod.rpart = train(learner = lrn.rpart, task = task.rpart)
+
+predictions.rpart = predict(object=mod.rpart, newdata=test)
+confusion_matrix.rpart = table(Actual = pull(predictions.rpart$data['truth']), Predicted = pull(predictions.rpart$data['response']))
+accuracy.rpart = sum(diag(confusion_matrix.rpart)) / sum(confusion_matrix.rpart)
+print(confusion_matrix.rpart)
+print(paste("Accuracy:", accuracy.rpart))
+
+# Approach 4: knn
+require(mlr3)
+task.knn = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
+lrn.knn = makeLearner("classif.knn", k=3L)
+lrn.knn
+mod.knn = train(learner = lrn.knn, task = task.knn)
+
+predictions.knn = predict(object=mod.knn, newdata=test)
+confusion_matrix.knn = table(Actual = pull(predictions.knn$data['truth']), Predicted = pull(predictions.knn$data['response']))
+accuracy.knn = sum(diag(confusion_matrix.knn)) / sum(confusion_matrix.knn)
+print(confusion_matrix.knn)
+print(paste("Accuracy:", accuracy.knn))
 
 # 10.Select one of the classifiers (from 9.) and perform a feature selection to determine which of the data set's 
 #    features are most relevant.
 #    Hint: Study the code chunks and associated slides in the feature selection chapter of your course 
 #    materials and modify the code to match this task!
+
+rinst.cv = makeResampleInstance("CV", iters = 10, task=task.rpart)
+ctrl.seq = makeFeatSelControlSequential(method = "sffs")
+res.seq = selectFeatures(learner = lrn.rpart, task = task.rpart, resampling = rinst.cv, control = ctrl.seq)
+colnames(train)
+res.seq$x
+
+res.seq$y
+
+head(getOptPathX(res.seq$opt.path),4)

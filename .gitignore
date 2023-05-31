@@ -2,3 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
+.DS_Store
+material/
+case_study_ds3_part2.pdf
+Case_Study_DS3.pdf
+material/.DS_Store
