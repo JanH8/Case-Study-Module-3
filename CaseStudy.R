@@ -8,6 +8,7 @@ require(GGally)
 require(fpc)
 require(factoextra)
 require(dbscan)
+require(pheatmap)
 # 1. Import the two data sets containing the trip information (trips-*.rds). Combine both data sets in a joint data set 
 #    and augment the information contained therein with the associated day of the week and month.
 
@@ -24,25 +25,71 @@ trips$day_of_week_num = match(trips$day_of_week, c("Monday","Tuesday","Wednesday
 table(trips$day_of_week)
 # 2. Conduct an exploratory data analysis ,i.e. , get an overview of the number of observations and the type and range of variables,
 #    compute descriptive statistics, visualize the data, and examine it for noticeable patterns and/or correlations.
-
+str(trips)
+summary(trips)
 
 trips_numeric = select(trips, c("duration", "air_distance", "day_of_month", "month","day_of_week_num"))
 
 ggpairs(trips_numeric)
 
+# calculate correlations
+correlation = round(cor(
+  select_if(trips, is.numeric),
+  use = "pairwise.complete.obs",
+  method = "spearman"
+),
+2)
+correlation = as.data.frame(correlation)
+# produce a heatmap for the correlation
+pheatmap(
+  correlation,
+  display_numbers = TRUE,
+  main = "correlation heatmap",
+  treeheight_row = 0,
+  treeheight_col = 0
+)
+
+# produce distributions per variable
+for (name in names(select_if(trips, is.numeric))) {
+  data = as.matrix(select_if(trips, is.numeric)[name])
+  par(mfrow = c(1, 3))
+  plot.ecdf(data, main = paste(name, "ecdf", " "))
+  boxplot(data, main = paste(name, "boxplot", " "))
+  hist(data, main = paste(name, "histogram", " "))
+}
 #3. Check the data for univariate and multivariate outliers. If you find any conspicuous trips, 
 #   decide how to deal with them (remove or keep them) and justify your decision.
+
 summary(trips)
 # big range between durations 3rd Quartile (19) and Max. (1231)
 # big range between air distance 3rd Quartile (2.03) and Max. (12.24)
 
+# calculate z-scores
+trips$duration_z = (trips$duration - mean(trips$duration)) / sd(trips$duration)
+trips$air_distance_z = (trips$air_distance - mean(trips$air_distance)) / sd(trips$air_distance)
+
+# Visualize z-scores
+hist(trips$duration_z, main = "Duration z-Score", xlab = "Duration z-Score")
+hist(trips$air_distance_z, main = "Air Distance z-Score", xlab = "Air Distance z-Score")
+
+trips_outliers = trips %>%
+  filter(duration_z > 3.5 | air_distance_z > 3.5)
+ggpairs(trips_outliers)
+
 trips_cleaned = trips %>%
-  filter(duration < 750) %>%
-  filter(air_distance < 10)
+  filter(duration_z < 3.5 & air_distance_z < 3.5) %>%
+  mutate("duration_z"=NULL,"air_distance_z"=NULL)
 
 trips_cleaned_numeric = select(trips_cleaned, c("duration", "air_distance", "day_of_month", "month","day_of_week_num"))
 
-ggpairs(trips_cleaned_numeric)
+# produce distributions per variable
+for (name in c("duration","air_distance")) {
+  data = as.matrix(select_if(trips_cleaned_numeric, is.numeric)[name])
+  par(mfrow = c(1, 3))
+  plot.ecdf(data, main = paste(name, "ecdf", " "))
+  boxplot(data, main = paste(name, "boxplot", " "))
+  hist(data, main = paste(name, "histogram", " "))
+}
 
 # 4. In your materials,you will find another dataset (stations.rds) containing the
 # coordinates of the nextbike stations. Add the locations to the map of the region shown above.
@@ -63,36 +110,39 @@ stations_coords = stations[,c(1:2)]
 
 d = dist(stations_coords, method = 'euclidean')
 
-ccompl = hclust(d,method = "complete")
-plot(ccompl)
+avg = hclust(d,method = "average")
+par(mfrow = c(1, 1))
+
+plot(avg)
+avg
 
 
 # Complete Linkage
-stations$ccompl = as.character(cutree(ccompl, k = 6))
+stations$avg = as.character(cutree(avg, k = 3))
 map +
-  geom_point(data=stations, aes(x = lng, y = lat, col = ccompl))
+  geom_point(data=stations, aes(x = lng, y = lat, col = avg))
 
 # DBSCAN
-kNNdistplot(stations_coords, k=3)
-abline(h=0.024, col = "red")
-cdbscan = fpc::dbscan(stations_coords, eps=0.024,MinPts = 3, method = "hybrid")
+minPts = 5
+k = minPts-1
+
+kNNdistplot(stations_coords, k=k)
+abline(h=0.0265, col = "red")
+cdbscan = fpc::dbscan(stations_coords, eps=0.0265,MinPts = minPts, method = "hybrid")
 stations$cdbscan = as.character(cdbscan$cluster)
 map +
   geom_point(data=stations, aes(x = lng, y = lat, col = cdbscan))
 
 
 # kmeans
-stations_coords_s = apply(stations_coords,2,scale)
-apply(stations_coords_s,2,var)
-
-n = nrow(stations_coords_s)
+n = nrow(stations_coords)
 wss = rep(1:10)
 for( i in 1:10){
-  wss[i] = sum(kmeans(stations_coords_s, centers = i)$withinss)
+  wss[i] = sum(kmeans(stations_coords, centers = i)$withinss)
 }
-plot(wss)
+plot(wss, xlab = "Number of clusters", ylab = "within group sum of squares")
 
-ergClust = kmeans(stations_coords_s, centers = 4)
+ergClust = kmeans(stations_coords, centers = 2)
 stations$ckmeans = as.character(ergClust$cluster)
 
 map +
@@ -102,88 +152,57 @@ map +
 #    Where should these service stations be placed in order to be accessible as well as possible from all 
 #    stations of the respective cluster? Mark the recommended locations on your map as well!
 
-clusters = pull(distinct(stations,ccompl),ccompl)
+clusters = pull(distinct(stations,avg),avg)
 empty = rep(0, length(clusters))
 cluster_centers = tibble("cluster"=clusters,"lat"=empty, "lng"=empty ) 
 c = "1"
 
 averages = stations %>%
-  select_at(c("lat","lng","ccompl")) %>%
-  group_by(ccompl) %>%
+  select_at(c("lat","lng","avg")) %>%
+  group_by(avg) %>%
   summarise_all(mean)
 averages
 
 map +
-  geom_point(data=stations, aes(x = lng, y = lat, col = ccompl)) +
-  geom_point(data = averages, aes(x=lng,y=lat,col=ccompl), shape = 18, size = 5)
+  geom_point(data=stations, aes(x = lng, y = lat, col = avg)) +
+  geom_point(data = averages, aes(x=lng,y=lat,col=avg), shape = 18, size = 5)+
+  labs(col='service stations')
 
 
 # 8. Intuitively, one would expect a relationship between trip duration and the other variables 
 #    (especially traveled distance). Examine this assumption by modeling the relationship using various regression 
 #    techniques. Which procedure is best suited for this purpose? Interpret your result(s)!
 
-# Assuming that trip_duration is the dependent variable and distance is the independent variable
-model_lm <- lm(duration ~ air_distance, data = trips)
-# Logarithmic regression
-model_log <- glm(duration ~ log(air_distance), data = trips, family = "gaussian")
+plot(trips_cleaned$air_distance, trips_cleaned$duration)
 
-# Exponential regression
-model_exp <- glm(duration ~ exp(air_distance), data = trips, family = "gaussian")
+# multiple linear regression model
+model_mlm = lm(duration ~ air_distance + day_of_week_num + month + day_of_month, data = trips_cleaned)
+summary(model_mlm)
 
-# Polynomial regression
-model_poly <- glm(duration ~ air_distance + I(air_distance^2), data = trips, family = "gaussian")
-
-# Print summary of the models
+# linear model
+model_lm = lm(duration ~ air_distance, data = trips_cleaned)
 summary(model_lm)
-summary(model_log)
-summary(model_exp)
-summary(model_poly)
 
 
 # 9. For urban planning, one of the areas of interest is the traffic between different areas of a city. 
 #    Consider the clusters identified in 5. as separate areas of the city and compare several classifiers 
 #    that model the drop-off station cluster as a function of the other metrics in a benchmark study. 
 #    Interpret your result.
-drop_off = merge(trips_cleaned, stations, by.x = "station_stop", by.y = "station_number")["ccompl"] %>%
+drop_off = merge(trips_cleaned, stations, by.x = "station_stop", by.y = "station_number")["avg"] %>%
   pull()
-start = merge(trips_cleaned, stations, by.x = "station_start", by.y = "station_number")["ccompl"] %>%
+start = merge(trips_cleaned, stations, by.x = "station_start", by.y = "station_number")["avg"] %>%
   pull()
-trips_relevant_move = select(trips_cleaned, c("day_of_week_num","day_of_month", "month"))
+trips_relevant_move = select(trips_cleaned_numeric, c("day_of_week_num","day_of_month", "month", "air_distance", "duration"))
 
+trips_relevant_move = trips_cleaned
 trips_relevant_move$drop_off = as.factor(drop_off)
-trips_relevant_move$start = as.numeric(start)
+trips_relevant_move$start = as.factor(start)
 
 train_indices = sample(1:nrow(trips_relevant_move), nrow(trips_relevant_move) * 0.7)  # 70% for training
 train = as.data.frame(trips_relevant_move[train_indices,])
-train_X = train[, c("day_of_week_num","day_of_month", "month","start")]
-train_Y = train[,c("drop_off")]
 test = as.data.frame(trips_relevant_move[-train_indices,])
-test_X = test[, c("day_of_week_num","day_of_month", "month","start")]
-test_Y = test[, c("drop_off")]
 
-# Approach 1: Random forest
-# Load the randomForest package
-library(randomForest)
-
-# Set seed for reproducibility
-set.seed(123)  
-
-# Set up and train the random forest classifier
-rf_model = randomForest(x = train_X, y = pull(train_Y), ntree = 100)
-
-# Print the summary of the random forest model
-print(rf_model)
-
-# Predict using the trained random forest model
-rf_predictions = predict(rf_model, test_X)
-
-# Evaluate the performance of the random forest model
-confusion_matrix = table(Actual = pull(test_Y), Predicted = rf_predictions)
-accuracy = sum(diag(confusion_matrix)) / sum(confusion_matrix)
-print(confusion_matrix)
-print(paste("Accuracy:", accuracy))
-
-# Approach 2: svm
+# Approach 1: svm
 require(mlr)
 task.svm = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
 lrn.svm = makeLearner("classif.ksvm")
@@ -196,7 +215,7 @@ accuracy.svm = sum(diag(confusion_matrix.svm)) / sum(confusion_matrix.svm)
 print(confusion_matrix.svm)
 print(paste("Accuracy:", accuracy.svm))
 
-# Approach 3: decision tree
+# Approach 2: decision tree
 require(mlr)
 task.rpart = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
 lrn.rpart = makeLearner("classif.rpart")
@@ -209,30 +228,29 @@ accuracy.rpart = sum(diag(confusion_matrix.rpart)) / sum(confusion_matrix.rpart)
 print(confusion_matrix.rpart)
 print(paste("Accuracy:", accuracy.rpart))
 
-# Approach 4: knn
-require(mlr3)
-task.knn = makeClassifTask(data = train, target = "drop_off", id = "drop_off" )
-lrn.knn = makeLearner("classif.knn", k=3L)
-lrn.knn
-mod.knn = train(learner = lrn.knn, task = task.knn)
-
-predictions.knn = predict(object=mod.knn, newdata=test)
-confusion_matrix.knn = table(Actual = pull(predictions.knn$data['truth']), Predicted = pull(predictions.knn$data['response']))
-accuracy.knn = sum(diag(confusion_matrix.knn)) / sum(confusion_matrix.knn)
-print(confusion_matrix.knn)
-print(paste("Accuracy:", accuracy.knn))
-
 # 10.Select one of the classifiers (from 9.) and perform a feature selection to determine which of the data set's 
 #    features are most relevant.
 #    Hint: Study the code chunks and associated slides in the feature selection chapter of your course 
 #    materials and modify the code to match this task!
 
-rinst.cv = makeResampleInstance("CV", iters = 10, task=task.rpart)
-ctrl.seq = makeFeatSelControlSequential(method = "sffs")
-res.seq = selectFeatures(learner = lrn.rpart, task = task.rpart, resampling = rinst.cv, control = ctrl.seq)
+rinst.cv = makeResampleInstance("CV", iters = 10, task=task.svm)
+ctrl.seq = makeFeatSelControlSequential(method = "sbs")
+res.seq = selectFeatures(learner = lrn.svm, task = task.svm, resampling = rinst.cv, control = ctrl.seq)
 colnames(train)
 res.seq$x
 
 res.seq$y
 
-head(getOptPathX(res.seq$opt.path),4)
+optpath = getOptPathX(res.seq$opt.path)
+optpath$mmce = getOptPathY(res.seq$opt.path)
+optpath
+pheatmap(
+  optpath,
+  display_numbers = round(optpath,4),
+  main = "iterations and misclassification error",
+  treeheight_row = 0,
+  treeheight_col = 0,
+  cluster_cols = F,
+  cluster_rows = F
+)
+
